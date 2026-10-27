@@ -1,0 +1,642 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CN Experiment - Link State Routing</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:Arial,sans-serif;background:#f3f4f6;color:#222}
+.window{max-width:1250px;margin:12px auto;background:white;border:1px solid #bbb}
+header{background:#eaeaea;padding:12px;text-align:center;font-weight:bold;border-bottom:1px solid #ccc}
+.toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:9px;padding:12px;background:#fafafa;border-bottom:1px solid #ddd}
+button{padding:8px 13px;border:1px solid #aaa;border-radius:4px;background:white;cursor:pointer}
+button:hover{background:#e5efff}
+button.primary{background:#e2f3e5;border-color:#80b58a}
+label{font-size:13px;display:flex;align-items:center;gap:6px}
+#clock{background:#111;color:#75ff87;padding:7px 10px;font-family:monospace}
+#network{width:100%;height:400px;display:block;background:white}
+.content{padding:12px;display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.panel{border:1px solid #ddd;padding:12px;background:#fcfcfc;min-width:0}
+h3{font-size:15px;margin:0 0 12px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.stat{background:#edf1f6;padding:10px;border-radius:3px}
+.stat span{font-size:12px;color:#555;display:block}
+.stat strong{font-size:21px;display:block;margin-top:5px}
+#status{margin-top:12px;font-size:13px;color:#27632a}
+.tablewrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:12px;background:white}
+th,td{border:1px solid #d5d9df;padding:7px;text-align:center;white-space:nowrap}
+th{background:#e9edf3}
+#tables{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.rt{border:1px solid #ddd;padding:8px;min-width:0}
+.rt h4{margin:0 0 7px;font-size:13px}
+.rt table{font-size:11px}
+.rt th,.rt td{padding:5px}
+#log{height:150px;overflow:auto;font-size:12px;line-height:1.65}
+.legend{display:flex;flex-wrap:wrap;gap:16px;font-size:12px;margin-top:10px}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px}
+.note{padding:0 12px 14px;font-size:12px;color:#666}
+@media(max-width:760px){
+#network{height:350px}
+.content{grid-template-columns:1fr}
+#tables{grid-template-columns:repeat(2,minmax(0,1fr))}
+.stats{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+@media(max-width:430px){
+#tables{grid-template-columns:1fr}
+.stat{padding:7px}
+.stat strong{font-size:17px}
+}
+</style>
+</head>
+<body>
+<div class="window">
+
+<header>Network Animator — Link State Routing Algorithm</header>
+
+<div class="toolbar">
+<button id="start" class="primary">▶ Start</button>
+<button id="pause">Ⅱ Pause</button>
+<button id="step">⏭ Step</button>
+<button id="reset">↻ Reset</button>
+
+<label>Speed
+<input id="speed" type="range" min="1" max="5" value="3">
+<span id="speedVal">3×</span>
+</label>
+
+<span id="clock">0.00 s</span>
+</div>
+
+<canvas id="network"></canvas>
+
+<div class="content">
+
+<section class="panel">
+<h3>Link State Routing Statistics</h3>
+<div class="stats">
+<div class="stat">
+<span>LSA Packets Sent</span>
+<strong id="messages">0</strong>
+</div>
+<div class="stat">
+<span>Routers Processed</span>
+<strong id="processed">0/5</strong>
+</div>
+<div class="stat">
+<span>Convergence</span>
+<strong id="convergence">No</strong>
+</div>
+</div>
+<div id="status">Ready. Click Start to flood link-state advertisements.</div>
+<div class="legend">
+<span><i class="dot" style="background:#16c934"></i>Router</span>
+<span><i class="dot" style="background:#2878df"></i>LSA packet</span>
+<span><i class="dot" style="background:#ff9800"></i>Link</span>
+</div>
+</section>
+
+<section class="panel">
+<h3>Network Link Costs</h3>
+<div class="tablewrap">
+<table>
+<thead>
+<tr><th>Link</th><th>Router 1</th><th>Router 2</th><th>Cost</th></tr>
+</thead>
+<tbody id="links"></tbody>
+</table>
+</div>
+</section>
+
+<section class="panel" style="grid-column:1/-1">
+<h3>Link State Routing Tables — Dijkstra</h3>
+<div id="tables"></div>
+</section>
+
+<section class="panel" style="grid-column:1/-1">
+<h3>Routing Event Log</h3>
+<div id="log">Simulation initialized.<br>Routers are ready to exchange LSAs.</div>
+</section>
+
+</div>
+
+<div class="note">
+Educational simulation inspired by NS-3 network animation. This standalone HTML program models link-state advertisement flooding and Dijkstra shortest-path calculation in the browser; it does not execute NS-3 or send real network packets.
+</div>
+</div>
+
+<script>
+const canvas=document.getElementById("network");
+const ctx=canvas.getContext("2d");
+const $=id=>document.getElementById(id);
+
+const names=["A","B","C","D","E"];
+
+const edges=[
+ {a:0,b:1,cost:2},
+ {a:0,b:2,cost:5},
+ {a:1,b:2,cost:1},
+ {a:1,b:3,cost:4},
+ {a:2,b:3,cost:2},
+ {a:2,b:4,cost:5},
+ {a:3,b:4,cost:1}
+];
+
+let nodes=[];
+let packets=[];
+let running=false;
+let stepMode=false;
+let time=0,last=0;
+let messages=0,processed=0;
+let converged=false;
+let stage="idle";
+let roundActive=false;
+let currentRouter=0;
+let logItems=[
+ "Simulation initialized.",
+ "Routers are ready to exchange LSAs."
+];
+
+let lsdb=[];
+let dist=[];
+let nextHop=[];
+let settled=[];
+let dijkstraSource=0;
+let dijkstraStep=0;
+
+function resize(){
+ const r=canvas.getBoundingClientRect();
+ const d=window.devicePixelRatio||1;
+ canvas.width=Math.max(1,Math.round(r.width*d));
+ canvas.height=Math.max(1,Math.round(r.height*d));
+ ctx.setTransform(d,0,0,d,0,0);
+
+ const w=r.width,h=r.height;
+ nodes=[
+  {x:w*.12,y:h*.30},
+  {x:w*.32,y:h*.68},
+  {x:w*.50,y:h*.30},
+  {x:w*.69,y:h*.68},
+  {x:w*.88,y:h*.30}
+ ];
+ draw();
+}
+
+function neighbors(i){
+ return edges.flatMap(e=>{
+  if(e.a===i)return [{node:e.b,cost:e.cost}];
+  if(e.b===i)return [{node:e.a,cost:e.cost}];
+  return [];
+ });
+}
+
+function getEdge(a,b){
+ return edges.find(e=>
+  (e.a===a&&e.b===b)||(e.a===b&&e.b===a)
+ );
+}
+
+function renderLinks(){
+ $("links").innerHTML=edges.map(e=>`
+ <tr>
+ <td>${names[e.a]}–${names[e.b]}</td>
+ <td>${names[e.a]}</td>
+ <td>${names[e.b]}</td>
+ <td>${e.cost}</td>
+ </tr>`).join("");
+}
+
+function renderTables(){
+ $("tables").innerHTML=names.map((name,i)=>`
+ <div class="rt">
+ <h4>Router ${name}</h4>
+ <table>
+ <thead>
+ <tr><th>Destination</th><th>Cost</th><th>Next Hop</th></tr>
+ </thead>
+ <tbody>
+ ${names.map((dest,j)=>`
+ <tr>
+ <td>${dest}</td>
+ <td>${dist[i][j]===Infinity?"∞":dist[i][j]}</td>
+ <td>${nextHop[i][j]}</td>
+ </tr>`).join("")}
+ </tbody>
+ </table>
+ </div>`).join("");
+}
+
+function renderLog(){
+ $("log").innerHTML=logItems.map(s=>
+  s.replace(/&/g,"&amp;")
+   .replace(/</g,"&lt;")
+   .replace(/>/g,"&gt;")
+ ).join("<br>");
+}
+
+function log(message){
+ logItems.unshift(time.toFixed(2)+" s — "+message);
+ logItems=logItems.slice(0,25);
+ renderLog();
+}
+
+function initDatabase(){
+ lsdb=names.map(()=>[]);
+ for(let i=0;i<names.length;i++){
+  lsdb[i]=edges.filter(e=>e.a===i||e.b===i)
+   .map(e=>({a:e.a,b:e.b,cost:e.cost}));
+ }
+}
+
+function initializeRoutingTables(){
+ dist=names.map((_,i)=>
+  names.map((__,j)=>i===j?0:Infinity)
+ );
+ nextHop=names.map((_,i)=>
+  names.map((__,j)=>i===j?"-":"-")
+ );
+ settled=names.map(()=>false);
+}
+
+function resetSimulation(){
+ running=false;
+ stepMode=false;
+ time=0;last=0;
+ packets=[];
+ messages=0;processed=0;
+ converged=false;
+ stage="idle";
+ roundActive=false;
+ currentRouter=0;
+ dijkstraSource=0;
+ dijkstraStep=0;
+
+ initDatabase();
+ initializeRoutingTables();
+
+ $("clock").textContent="0.00 s";
+ $("messages").textContent="0";
+ $("processed").textContent="0/5";
+ $("convergence").textContent="No";
+ $("status").textContent="Ready. Click Start to flood link-state advertisements.";
+ $("status").style.color="#27632a";
+
+ logItems=[
+  "Simulation initialized.",
+  "Routers are ready to exchange LSAs."
+ ];
+
+ renderLinks();
+ renderTables();
+ renderLog();
+ resize();
+ draw();
+}
+
+function startFlooding(){
+ if(roundActive||converged)return;
+
+ roundActive=true;
+ stage="flood";
+ packets=[];
+
+ /*
+  Each router originates an LSA containing its directly
+  connected neighbors and link costs. The LSAs are flooded
+  along network links to build the link-state databases.
+ */
+ for(let i=0;i<names.length;i++){
+  for(const n of neighbors(i)){
+   packets.push({
+    from:i,
+    to:n.node,
+    progress:0,
+    speed:.3,
+    origin:i,
+    edgeCost:n.cost
+   });
+  }
+ }
+
+ messages+=packets.length;
+ $("messages").textContent=messages;
+ log("Link-state advertisements are being flooded.");
+ $("status").textContent="Routers are exchanging LSAs.";
+}
+
+function finishFlooding(){
+ /*
+  In this simplified model, flooding distributes the same
+  complete topology database to every router.
+ */
+ initDatabase();
+ processed=0;
+ currentRouter=0;
+ dijkstraSource=0;
+ stage="dijkstra";
+ roundActive=false;
+
+ log("Link-state databases are complete at all routers.");
+ log("Starting Dijkstra shortest-path calculation.");
+ $("status").textContent="LSDB built. Running Dijkstra's algorithm.";
+ beginDijkstra(0);
+}
+
+function beginDijkstra(source){
+ dist[source]=names.map((_,j)=>j===source?0:Infinity);
+ nextHop[source]=names.map((_,j)=>j===source?"-":"-");
+ settled=names.map(()=>false);
+ settled[source]=true;
+
+ for(const n of neighbors(source)){
+  dist[source][n.node]=n.cost;
+  nextHop[source][n.node]=names[n.node];
+ }
+
+ dijkstraStep=0;
+ log("Router "+names[source]+" begins Dijkstra's algorithm.");
+ renderTables();
+}
+
+function runDijkstraStep(){
+ const source=dijkstraSource;
+
+ let u=-1,best=Infinity;
+ for(let i=0;i<names.length;i++){
+  if(!settled[i]&&dist[source][i]<best){
+   best=dist[source][i];
+   u=i;
+  }
+ }
+
+ if(u===-1){
+  processed++;
+  $("processed").textContent=processed+"/5";
+  log("Router "+names[source]+" completed its shortest-path tree.");
+
+  if(source<names.length-1){
+   dijkstraSource++;
+   beginDijkstra(dijkstraSource);
+  }else{
+   converged=true;
+   stage="done";
+   $("convergence").textContent="Yes";
+   $("status").textContent="Convergence achieved! All shortest paths are calculated.";
+   log("All routers completed Dijkstra. Routing tables are stable.");
+  }
+
+  renderTables();
+  draw();
+  return;
+ }
+
+ settled[u]=true;
+ const ns=neighbors(u);
+
+ for(const n of ns){
+  if(settled[n.node])continue;
+
+  const candidate=dist[source][u]+n.cost;
+  if(candidate<dist[source][n.node]){
+   dist[source][n.node]=candidate;
+
+   nextHop[source][n.node]=
+    u===source?names[n.node]:nextHop[source][u];
+  }
+ }
+
+ dijkstraStep++;
+ log("Router "+names[source]+" processes node "+names[u]+
+     " with cost "+best+".");
+ renderTables();
+ draw();
+}
+
+function arrow(x1,y1,x2,y2,color){
+ const angle=Math.atan2(y2-y1,x2-x1);
+ const head=8;
+ ctx.strokeStyle=color;
+ ctx.fillStyle=color;
+ ctx.lineWidth=2.3;
+ ctx.beginPath();
+ ctx.moveTo(x1,y1);
+ ctx.lineTo(x2,y2);
+ ctx.stroke();
+
+ ctx.beginPath();
+ ctx.moveTo(x2,y2);
+ ctx.lineTo(x2-head*Math.cos(angle-.45),y2-head*Math.sin(angle-.45));
+ ctx.lineTo(x2-head*Math.cos(angle+.45),y2-head*Math.sin(angle+.45));
+ ctx.closePath();
+ ctx.fill();
+}
+
+function draw(){
+ const w=canvas.clientWidth,h=canvas.clientHeight;
+ if(!w||nodes.length!==5)return;
+
+ ctx.clearRect(0,0,w,h);
+
+ ctx.strokeStyle="#e3e5e9";
+ ctx.lineWidth=1;
+ for(let x=0;x<w;x+=w/5){
+  ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,h);ctx.stroke();
+ }
+ for(let y=0;y<h;y+=h/4){
+  ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();
+ }
+
+ /* Draw physical network links and their costs. */
+ edges.forEach(e=>{
+  const a=nodes[e.a],b=nodes[e.b];
+  ctx.strokeStyle="#b1b5bc";
+  ctx.lineWidth=3;
+  ctx.beginPath();
+  ctx.moveTo(a.x,a.y);
+  ctx.lineTo(b.x,b.y);
+  ctx.stroke();
+
+  const mx=(a.x+b.x)/2,my=(a.y+b.y)/2;
+  ctx.fillStyle="white";
+  ctx.beginPath();ctx.arc(mx,my,12,0,Math.PI*2);ctx.fill();
+
+  ctx.fillStyle="#333";
+  ctx.font="bold 12px Arial";
+  ctx.textAlign="center";
+  ctx.fillText(e.cost,mx,my+4);
+ });
+
+ /* Animate LSA packets along physical links. */
+ packets.forEach(p=>{
+  const a=nodes[p.from],b=nodes[p.to];
+  const x=a.x+(b.x-a.x)*p.progress;
+  const y=a.y+(b.y-a.y)*p.progress;
+  const dx=b.x-a.x,dy=b.y-a.y;
+  const len=Math.hypot(dx,dy)||1;
+  const ux=dx/len,uy=dy/len;
+
+  arrow(
+   x-ux*10,y-uy*10,
+   x+ux*10,y+uy*10,
+   "#2878df"
+  );
+
+  ctx.fillStyle="#1756a0";
+  ctx.font="10px Arial";
+  ctx.textAlign="center";
+  ctx.fillText("LSA "+names[p.origin],x,y-12);
+ });
+
+ /* Draw routers. */
+ nodes.forEach((n,i)=>{
+  ctx.beginPath();
+  ctx.arc(n.x,n.y,24,0,Math.PI*2);
+
+  if(converged)ctx.fillStyle="#16c934";
+  else if(stage==="dijkstra"&&i===dijkstraSource)ctx.fillStyle="#75dc88";
+  else ctx.fillStyle="#fff500";
+
+  ctx.fill();
+  ctx.strokeStyle="#555";
+  ctx.lineWidth=1.5;
+  ctx.stroke();
+
+  ctx.fillStyle="#222";
+  ctx.font="bold 13px Arial";
+  ctx.textAlign="center";
+  ctx.fillText("Router "+names[i],n.x,n.y+42);
+
+  ctx.fillStyle="#777";
+  ctx.font="11px Arial";
+  ctx.fillText("Node "+i,n.x,n.y+56);
+ });
+
+ ctx.textAlign="left";
+ ctx.font="12px Arial";
+ ctx.fillStyle="#333";
+ ctx.fillText("LINK STATE ADVERTISEMENT",12,20);
+
+ ctx.textAlign="right";
+ ctx.fillText("LSA Packets: "+messages,w-12,20);
+
+ if(stage==="dijkstra"){
+  ctx.textAlign="center";
+  ctx.fillStyle="#1756a0";
+  ctx.font="12px Arial";
+  ctx.fillText("Dijkstra: Router "+names[dijkstraSource],w/2,h-12);
+ }
+
+ if(converged){
+  ctx.textAlign="center";
+  ctx.fillStyle="#14872b";
+  ctx.font="bold 13px Arial";
+  ctx.fillText("SHORTEST PATHS CALCULATED",w/2,h-12);
+ }
+}
+
+function update(dt){
+ time+=dt;
+ $("clock").textContent=time.toFixed(2)+" s";
+ const speed=Number($("speed").value);
+
+ if(stage==="flood"){
+  packets.forEach(p=>p.progress+=dt*speed*p.speed);
+
+  if(packets.length&&packets.every(p=>p.progress>=1)){
+   packets=[];
+   finishFlooding();
+
+   if(stepMode){
+    running=false;stepMode=false;last=0;
+   }
+  }
+ }
+ else if(stage==="dijkstra"){
+  if(!roundActive){
+   /* One Dijkstra node-processing step per animation interval. */
+   roundActive=true;
+   packets=[];
+  }
+
+  if(!stepMode){
+   update.dijkstraTimer=(update.dijkstraTimer||0)+dt*speed;
+   if(update.dijkstraTimer>=.65){
+    update.dijkstraTimer=0;
+    runDijkstraStep();
+   }
+  }
+ }
+}
+
+function loop(ts){
+ if(!running)return;
+ if(!last)last=ts;
+
+ const dt=Math.min((ts-last)/1000,.05);
+ last=ts;
+
+ if(stage==="dijkstra"&&stepMode){
+  runDijkstraStep();
+  running=false;
+  stepMode=false;
+  last=0;
+  draw();
+  return;
+ }
+
+ update(dt);
+ draw();
+
+ if(running)requestAnimationFrame(loop);
+}
+
+$("start").onclick=()=>{
+ if(running||converged)return;
+
+ running=true;
+ stepMode=false;
+ last=0;
+
+ if(stage==="idle")startFlooding();
+ else if(stage==="dijkstra")roundActive=false;
+
+ requestAnimationFrame(loop);
+};
+
+$("pause").onclick=()=>{
+ running=false;
+ last=0;
+ $("status").textContent="Simulation paused.";
+ draw();
+};
+
+$("step").onclick=()=>{
+ if(running||converged)return;
+
+ stepMode=true;
+ running=true;
+ last=0;
+
+ if(stage==="idle"){
+  startFlooding();
+ }else if(stage==="dijkstra"){
+  roundActive=false;
+ }
+
+ requestAnimationFrame(loop);
+};
+
+$("reset").onclick=resetSimulation;
+
+$("speed").addEventListener("input",()=>{
+ $("speedVal").textContent=$("speed").value+"×";
+});
+
+window.addEventListener("resize",resize);
+
+resetSimulation();
+</script>
+</body>
+</html>

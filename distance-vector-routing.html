@@ -1,0 +1,562 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CN Experiment - Distance Vector Routing</title>
+
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:Arial,sans-serif;background:#f3f4f6;color:#222}
+.window{max-width:1250px;margin:12px auto;background:white;border:1px solid #bbb}
+header{background:#eaeaea;padding:12px;text-align:center;font-weight:bold;border-bottom:1px solid #ccc}
+.toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:9px;padding:12px;background:#fafafa;border-bottom:1px solid #ddd}
+button{padding:8px 13px;border:1px solid #aaa;border-radius:4px;background:white;cursor:pointer}
+button:hover{background:#e5efff}
+button.primary{background:#e2f3e5;border-color:#80b58a}
+label{font-size:13px;display:flex;align-items:center;gap:6px}
+#clock{background:#111;color:#75ff87;padding:7px 10px;font-family:monospace}
+#network{width:100%;height:400px;display:block;background:white}
+.content{padding:12px;display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.panel{border:1px solid #ddd;padding:12px;background:#fcfcfc;min-width:0}
+h3{font-size:15px;margin:0 0 12px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.stat{background:#edf1f6;padding:10px;border-radius:3px}
+.stat span{font-size:12px;color:#555;display:block}
+.stat strong{font-size:21px;display:block;margin-top:5px}
+#status{margin-top:12px;font-size:13px;color:#27632a}
+.tablewrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:12px;background:white}
+th,td{border:1px solid #d5d9df;padding:7px;text-align:center;white-space:nowrap}
+th{background:#e9edf3}
+.changed{background:#d9f5dc;font-weight:bold}
+#tables{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.rt{border:1px solid #ddd;padding:8px;min-width:0}
+.rt h4{margin:0 0 7px;font-size:13px}
+.rt table{font-size:11px}
+.rt th,.rt td{padding:5px}
+#log{height:150px;overflow:auto;font-size:12px;line-height:1.65}
+.legend{display:flex;flex-wrap:wrap;gap:16px;font-size:12px;margin-top:10px}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px}
+.note{padding:0 12px 14px;font-size:12px;color:#666}
+@media(max-width:760px){
+ #network{height:350px}
+ .content{grid-template-columns:1fr}
+ #tables{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .stats{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+@media(max-width:430px){
+ #tables{grid-template-columns:1fr}
+ .stat{padding:7px}
+ .stat strong{font-size:17px}
+}
+</style>
+</head>
+
+<body>
+<div class="window">
+
+<header>Network Animator — Distance Vector Routing Algorithm</header>
+
+<div class="toolbar">
+<button id="start" class="primary">▶ Start</button>
+<button id="pause">Ⅱ Pause</button>
+<button id="step">⏭ Step</button>
+<button id="reset">↻ Reset</button>
+
+<label>Speed
+<input id="speed" type="range" min="1" max="5" value="3">
+<span id="speedVal">3×</span>
+</label>
+
+<span id="clock">0.00 s</span>
+</div>
+
+<canvas id="network"></canvas>
+
+<div class="content">
+
+<section class="panel">
+<h3>Routing Simulation Statistics</h3>
+
+<div class="stats">
+<div class="stat">
+<span>Routing Rounds</span>
+<strong id="rounds">0</strong>
+</div>
+<div class="stat">
+<span>Update Messages</span>
+<strong id="messages">0</strong>
+</div>
+<div class="stat">
+<span>Convergence</span>
+<strong id="convergence">No</strong>
+</div>
+</div>
+
+<div id="status">Ready. Click Start to exchange distance vectors.</div>
+
+<div class="legend">
+<span><i class="dot" style="background:#16c934"></i>Router</span>
+<span><i class="dot" style="background:#2878df"></i>Distance-vector update</span>
+<span><i class="dot" style="background:#ff9800"></i>Link</span>
+</div>
+</section>
+
+<section class="panel">
+<h3>Network Link Costs</h3>
+<div class="tablewrap">
+<table>
+<thead>
+<tr><th>Link</th><th>Router 1</th><th>Router 2</th><th>Cost</th></tr>
+</thead>
+<tbody id="links"></tbody>
+</table>
+</div>
+</section>
+
+<section class="panel" style="grid-column:1/-1">
+<h3>Distance Vector Routing Tables</h3>
+<div id="tables"></div>
+</section>
+
+<section class="panel" style="grid-column:1/-1">
+<h3>Routing Event Log</h3>
+<div id="log">Simulation initialized.<br>Each router initially knows only its direct neighbors.</div>
+</section>
+
+</div>
+
+</div>
+
+<script>
+const canvas=document.getElementById("network");
+const ctx=canvas.getContext("2d");
+const $=id=>document.getElementById(id);
+
+const names=["A","B","C","D","E"];
+
+const edges=[
+ {a:0,b:1,cost:2},
+ {a:0,b:2,cost:5},
+ {a:1,b:2,cost:1},
+ {a:1,b:3,cost:4},
+ {a:2,b:3,cost:2},
+ {a:2,b:4,cost:5},
+ {a:3,b:4,cost:1}
+];
+
+let nodes=[];
+let dist=[],nextHop=[];
+let packets=[];
+let running=false;
+let stepMode=false;
+let converged=false;
+let time=0,last=0;
+let rounds=0,messages=0;
+let roundActive=false;
+let changedNodes=new Set();
+let logItems=["Simulation initialized.","Routers know their direct link costs."];
+
+function init(){
+ dist=names.map((_,i)=>
+  names.map((__,j)=>{
+   if(i===j)return 0;
+   const e=edges.find(e=>(e.a===i&&e.b===j)||(e.a===j&&e.b===i));
+   return e?e.cost:Infinity;
+  })
+ );
+
+ nextHop=names.map((_,i)=>
+  names.map((__,j)=>{
+   if(i===j)return "-";
+   const e=edges.find(e=>(e.a===i&&e.b===j)||(e.a===j&&e.b===i));
+   return e?names[j]:"-";
+  })
+ );
+
+ packets=[];
+ running=false;
+ stepMode=false;
+ converged=false;
+ roundActive=false;
+ changedNodes.clear();
+ time=0;last=0;rounds=0;messages=0;
+
+ $("clock").textContent="0.00 s";
+ $("rounds").textContent="0";
+ $("messages").textContent="0";
+ $("convergence").textContent="No";
+ $("status").textContent="Ready. Click Start to exchange distance vectors.";
+ $("status").style.color="#27632a";
+
+ logItems=["Simulation initialized.","Routers know their direct link costs."];
+ renderLog();
+ renderTables();
+ renderLinks();
+ resize();
+ draw();
+}
+
+function resize(){
+ const r=canvas.getBoundingClientRect();
+ const d=window.devicePixelRatio||1;
+ canvas.width=Math.max(1,Math.round(r.width*d));
+ canvas.height=Math.max(1,Math.round(r.height*d));
+ ctx.setTransform(d,0,0,d,0,0);
+
+ const w=r.width,h=r.height;
+ nodes=[
+  {x:w*.12,y:h*.30},
+  {x:w*.32,y:h*.68},
+  {x:w*.50,y:h*.30},
+  {x:w*.69,y:h*.68},
+  {x:w*.88,y:h*.30}
+ ];
+ draw();
+}
+
+function renderLinks(){
+ $("links").innerHTML=edges.map(e=>`
+ <tr>
+ <td>${names[e.a]}–${names[e.b]}</td>
+ <td>${names[e.a]}</td>
+ <td>${names[e.b]}</td>
+ <td>${e.cost}</td>
+ </tr>`).join("");
+}
+
+function renderTables(){
+ $("tables").innerHTML=names.map((name,i)=>`
+ <div class="rt">
+ <h4>Router ${name}</h4>
+ <table>
+ <thead><tr><th>Destination</th><th>Cost</th><th>Next Hop</th></tr></thead>
+ <tbody>
+ ${names.map((dest,j)=>`
+ <tr class="${changedNodes.has(i+','+j)?'changed':''}">
+ <td>${dest}</td>
+ <td>${dist[i][j]===Infinity?'∞':dist[i][j]}</td>
+ <td>${nextHop[i][j]}</td>
+ </tr>`).join("")}
+ </tbody>
+ </table>
+ </div>`).join("");
+}
+
+function log(message){
+ logItems.unshift(time.toFixed(2)+" s — "+message);
+ logItems=logItems.slice(0,25);
+ renderLog();
+}
+
+function renderLog(){
+ $("log").innerHTML=logItems.map(s=>
+  s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+ ).join("<br>");
+}
+
+function neighbors(i){
+ return edges.flatMap(e=>{
+  if(e.a===i)return [{node:e.b,cost:e.cost}];
+  if(e.b===i)return [{node:e.a,cost:e.cost}];
+  return [];
+ });
+}
+
+/* Each round sends one distance-vector update in each link direction. */
+function startRound(){
+ if(converged||roundActive)return;
+
+ roundActive=true;
+ changedNodes.clear();
+ packets=[];
+
+ edges.forEach(e=>{
+  packets.push({
+   from:e.a,to:e.b,progress:0,
+   speed:.28+Math.random()*.05,
+   vector:dist[e.a].slice()
+  });
+  packets.push({
+   from:e.b,to:e.a,progress:0,
+   speed:.28+Math.random()*.05,
+   vector:dist[e.b].slice()
+  });
+ });
+
+ messages+=packets.length;
+ $("messages").textContent=messages;
+
+ log("Round "+(rounds+1)+": routers exchange distance vectors.");
+ $("status").textContent="Distance-vector update messages are in transit.";
+ $("status").style.color="#275d2e";
+}
+
+/* Bellman-Ford distance-vector calculation using the previous round's vectors. */
+function finishRound(){
+ const oldDist=dist.map(row=>row.slice());
+ const oldHop=nextHop.map(row=>row.slice());
+
+ const newDist=oldDist.map(row=>row.slice());
+ const newHop=oldHop.map(row=>row.slice());
+
+ for(let i=0;i<names.length;i++){
+  const ns=neighbors(i);
+
+  for(let destination=0;destination<names.length;destination++){
+   if(destination===i)continue;
+
+   let best=oldDist[i][destination];
+   let bestHop=oldHop[i][destination];
+
+   for(const n of ns){
+    const remote=oldDist[n.node][destination];
+    if(remote===Infinity)continue;
+
+    const candidate=n.cost+remote;
+
+    if(candidate<best){
+     best=candidate;
+     bestHop=names[n.node];
+    }
+   }
+
+   newDist[i][destination]=best;
+   newHop[i][destination]=bestHop;
+
+   if(best!==oldDist[i][destination]||bestHop!==oldHop[i][destination]){
+    changedNodes.add(i+","+destination);
+   }
+  }
+ }
+
+ dist=newDist;
+ nextHop=newHop;
+ rounds++;
+ $("rounds").textContent=rounds;
+
+ renderTables();
+
+ if(changedNodes.size){
+  log("Round "+rounds+": "+changedNodes.size+" routing entries changed.");
+  $("status").textContent="Routing tables updated. More exchanges are required.";
+ }else{
+  converged=true;
+  $("convergence").textContent="Yes";
+  $("status").textContent="Convergence achieved! All routing tables are stable.";
+  log("Network converged after "+rounds+" routing rounds.");
+ }
+
+ roundActive=false;
+ draw();
+
+ if(stepMode){
+  running=false;
+  stepMode=false;
+  last=0;
+  draw();
+ }
+}
+
+function arrow(x1,y1,x2,y2,color){
+ const angle=Math.atan2(y2-y1,x2-x1);
+ const head=8;
+
+ ctx.strokeStyle=color;
+ ctx.fillStyle=color;
+ ctx.lineWidth=2.3;
+
+ ctx.beginPath();
+ ctx.moveTo(x1,y1);
+ ctx.lineTo(x2,y2);
+ ctx.stroke();
+
+ ctx.beginPath();
+ ctx.moveTo(x2,y2);
+ ctx.lineTo(x2-head*Math.cos(angle-.45),y2-head*Math.sin(angle-.45));
+ ctx.lineTo(x2-head*Math.cos(angle+.45),y2-head*Math.sin(angle+.45));
+ ctx.closePath();
+ ctx.fill();
+}
+
+function draw(){
+ const w=canvas.clientWidth,h=canvas.clientHeight;
+ if(!w||nodes.length!==5)return;
+
+ ctx.clearRect(0,0,w,h);
+
+ ctx.strokeStyle="#e3e5e9";
+ ctx.lineWidth=1;
+
+ for(let x=0;x<w;x+=w/5){
+  ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,h);ctx.stroke();
+ }
+
+ for(let y=0;y<h;y+=h/4){
+  ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();
+ }
+
+ /* Draw network links and their costs. */
+ edges.forEach(e=>{
+  const a=nodes[e.a],b=nodes[e.b];
+
+  ctx.strokeStyle="#b1b5bc";
+  ctx.lineWidth=3;
+  ctx.beginPath();
+  ctx.moveTo(a.x,a.y);
+  ctx.lineTo(b.x,b.y);
+  ctx.stroke();
+
+  const mx=(a.x+b.x)/2,my=(a.y+b.y)/2;
+
+  ctx.fillStyle="#fff";
+  ctx.beginPath();ctx.arc(mx,my,12,0,Math.PI*2);ctx.fill();
+
+  ctx.fillStyle="#333";
+  ctx.font="bold 12px Arial";
+  ctx.textAlign="center";
+  ctx.fillText(e.cost,mx,my+4);
+ });
+
+ /* Animate routing-update arrows along the links. */
+ packets.forEach(p=>{
+  const a=nodes[p.from],b=nodes[p.to];
+
+  const x=a.x+(b.x-a.x)*p.progress;
+  const y=a.y+(b.y-a.y)*p.progress;
+
+  const dx=b.x-a.x,dy=b.y-a.y;
+  const len=Math.hypot(dx,dy)||1;
+  const ux=dx/len,uy=dy/len;
+
+  arrow(
+   x-ux*10,y-uy*10,
+   x+ux*10,y+uy*10,
+   "#2878df"
+  );
+
+  ctx.fillStyle="#1756a0";
+  ctx.font="10px Arial";
+  ctx.textAlign="center";
+  ctx.fillText("DV",x,y-12);
+ });
+
+ /* Draw router nodes above links and packets. */
+ nodes.forEach((n,i)=>{
+  ctx.beginPath();
+  ctx.arc(n.x,n.y,24,0,Math.PI*2);
+  ctx.fillStyle=converged?"#16c934":"#fff500";
+  ctx.fill();
+
+  ctx.strokeStyle="#555";
+  ctx.lineWidth=1.5;
+  ctx.stroke();
+
+  ctx.fillStyle="#222";
+  ctx.font="bold 13px Arial";
+  ctx.textAlign="center";
+  ctx.fillText("Router "+names[i],n.x,n.y+42);
+
+  ctx.fillStyle="#777";
+  ctx.font="11px Arial";
+  ctx.fillText("Node "+i,n.x,n.y+56);
+ });
+
+ ctx.textAlign="left";
+ ctx.font="12px Arial";
+ ctx.fillStyle="#333";
+ ctx.fillText("DISTANCE VECTOR UPDATE",12,20);
+
+ ctx.textAlign="right";
+ ctx.fillText("Round: "+rounds,w-12,20);
+
+ if(converged){
+  ctx.fillStyle="#14872b";
+  ctx.textAlign="center";
+  ctx.font="bold 14px Arial";
+  ctx.fillText("ROUTING TABLES CONVERGED",w/2,h-12);
+ }
+}
+
+function update(dt){
+ time+=dt;
+ $("clock").textContent=time.toFixed(2)+" s";
+
+ const speed=Number($("speed").value);
+
+ packets.forEach(p=>{
+  p.progress+=dt*speed*p.speed;
+ });
+
+ const allArrived=packets.length>0&&packets.every(p=>p.progress>=1);
+
+ if(allArrived){
+  packets=[];
+  finishRound();
+
+  if(running&&!stepMode&&!converged){
+   startRound();
+  }
+ }
+}
+
+function loop(ts){
+ if(!running)return;
+
+ if(!last)last=ts;
+ const dt=Math.min((ts-last)/1000,.05);
+ last=ts;
+
+ update(dt);
+ draw();
+
+ if(running)requestAnimationFrame(loop);
+}
+
+$("start").onclick=()=>{
+ if(running||converged)return;
+
+ running=true;
+ stepMode=false;
+ last=0;
+
+ if(!roundActive)startRound();
+
+ requestAnimationFrame(loop);
+};
+
+$("pause").onclick=()=>{
+ running=false;
+ last=0;
+ stepMode=false;
+
+ $("status").textContent="Simulation paused.";
+ draw();
+};
+
+$("step").onclick=()=>{
+ if(running||converged)return;
+
+ stepMode=true;
+ running=true;
+ last=0;
+
+ if(!roundActive)startRound();
+
+ requestAnimationFrame(loop);
+};
+
+$("reset").onclick=init;
+
+$("speed").addEventListener("input",()=>{
+ $("speedVal").textContent=$("speed").value+"×";
+});
+
+window.addEventListener("resize",resize);
+
+init();
+</script>
+</body>
+</html>

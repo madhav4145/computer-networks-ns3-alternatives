@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CN Experiment 7 - UDP Simulation</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:Arial;background:#f4f5f7;color:#222}
+.window{max-width:1200px;margin:12px auto;background:white;border:1px solid #bbb}
+header{text-align:center;background:#eee;padding:12px;font-weight:bold}
+.toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px;background:#fafafa}
+button{padding:7px 13px;border:1px solid #aaa;border-radius:4px;background:white;cursor:pointer}
+button:hover{background:#e5efff}
+#clock{background:#111;color:#7cff86;padding:7px;font-family:monospace}
+canvas{width:100%;height:470px;display:block;border:1px solid #ddd}
+.panels{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:12px}
+.panel{padding:12px;border:1px solid #ddd;background:#fcfcfc}
+h3{font-size:15px;margin:0 0 12px}
+.stats{display:flex;gap:10px;flex-wrap:wrap}
+.stat{flex:1;min-width:90px;background:#edf1f6;padding:10px}
+.stat strong{display:block;font-size:21px;margin-top:5px}
+#log{height:95px;overflow:auto;font-size:12px;line-height:1.6}
+#status{font-size:13px;margin-top:12px;color:#27632a}
+@media(max-width:650px){
+.panels{grid-template-columns:1fr}
+canvas{height:390px}
+}
+</style>
+</head>
+<body>
+<div class="window">
+<header>Network Animator — UDP Protocol Simulation</header>
+<div class="toolbar">
+<button id="start">▶ Start</button>
+<button id="pause">Ⅱ Pause</button>
+<button id="reset">↻ Reset</button>
+<label>Speed <input id="speed" type="range" min="1" max="5" value="3"></label>
+<span id="clock">0.00 s</span>
+</div>
+<canvas id="network"></canvas>
+<div class="panels">
+<section class="panel">
+<h3>UDP Statistics</h3>
+<div class="stats">
+<div class="stat">Packets Sent<strong id="sent">0</strong></div>
+<div class="stat">Packets Received<strong id="received">0</strong></div>
+<div class="stat">Packets in Transit<strong id="transit">0</strong></div>
+</div>
+<div id="status">Ready. Click Start to transmit UDP packets.</div>
+</section>
+<section class="panel">
+<h3>UDP Event Log</h3>
+<div id="log">Simulation initialized.<br>UDP sender is ready.</div>
+</section>
+</div>
+</div>
+<script>
+const canvas=document.getElementById("network");
+const ctx=canvas.getContext("2d");
+const $=id=>document.getElementById(id);
+
+let running=false,last=0,time=0,nextSend=0;
+let packets=[],nodes=[],serial=0;
+let sent=0,received=0;
+
+function resize(){
+ const r=canvas.getBoundingClientRect();
+ const d=window.devicePixelRatio||1;
+ canvas.width=r.width*d;canvas.height=r.height*d;
+ ctx.setTransform(d,0,0,d,0,0);
+ const w=r.width,y=r.height*.52;
+ nodes=[
+  {x:w*.12,y,label:"UDP Sender",color:"#00ef18"},
+  {x:w*.37,y,label:"Router 1",color:"#fff500"},
+  {x:w*.63,y,label:"Router 2",color:"#ff9800"},
+  {x:w*.88,y,label:"UDP Receiver",color:"#1010f5"}
+ ];
+ draw();
+}
+function log(message){
+ $("log").innerHTML=time.toFixed(2)+" s — "+message+"<br>"+$("log").innerHTML;
+ const lines=$("log").innerHTML.split("<br>");
+ $("log").innerHTML=lines.slice(0,25).join("<br>");
+}
+function arrow(x1,y1,x2,y2,color){
+ const angle=Math.atan2(y2-y1,x2-x1),head=8;
+ ctx.strokeStyle=color;ctx.fillStyle=color;ctx.lineWidth=2.5;
+ ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+ ctx.beginPath();ctx.moveTo(x2,y2);
+ ctx.lineTo(x2-head*Math.cos(angle-.48),y2-head*Math.sin(angle-.48));
+ ctx.lineTo(x2-head*Math.cos(angle+.48),y2-head*Math.sin(angle+.48));
+ ctx.closePath();ctx.fill();
+}
+function sendPacket(){
+ packets.push({id:++serial,segment:0,progress:0,speed:.85+Math.random()*.15});
+ sent++;$("sent").textContent=sent;
+}
+function update(dt){
+ const speed=+$("speed").value;
+ time+=dt;nextSend-=dt*speed;
+ if(nextSend<=0){sendPacket();nextSend=.48;}
+
+ for(let i=packets.length-1;i>=0;i--){
+  const p=packets[i];
+  p.progress+=dt*speed*p.speed;
+  if(p.progress>=1){
+   p.progress=0;p.segment++;
+   if(p.segment>=3){
+    packets.splice(i,1);received++;
+    $("received").textContent=received;
+    if(received%3===0)log("UDP datagram "+received+" reached the receiver.");
+   }
+  }
+ }
+ $("clock").textContent=time.toFixed(2)+" s";
+ $("transit").textContent=packets.length;
+}
+function draw(){
+ const w=canvas.clientWidth,h=canvas.clientHeight;
+ if(!w||nodes.length!==4)return;
+ ctx.clearRect(0,0,w,h);
+ ctx.strokeStyle="#dedfe4";ctx.lineWidth=1;
+ for(let x=0;x<w;x+=w/4){
+  ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,h);ctx.stroke();
+ }
+ for(let y=0;y<h;y+=h/3){
+  ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();
+ }
+ const y=nodes[0].y;
+ for(let i=0;i<3;i++){
+  const a=nodes[i],b=nodes[i+1];
+  ctx.strokeStyle="#b0b3b9";ctx.lineWidth=2;
+  ctx.beginPath();ctx.moveTo(a.x+25,y);ctx.lineTo(b.x-25,y);ctx.stroke();
+ }
+
+/* UDP DATAGRAMS: forward direction only; no ACK packets. */
+ packets.forEach(p=>{
+  const a=nodes[p.segment];
+  const b=nodes[Math.min(p.segment+1,3)];
+  const x1=a.x+26,x2=b.x-26;
+  const x=x1+(x2-x1)*p.progress;
+
+  // All datagram arrows remain on the straight horizontal link
+  arrow(x-12,y,x+12,y,"#333");
+  ctx.fillStyle="#444";ctx.font="10px Arial";ctx.textAlign="center";
+  ctx.fillText("P"+p.id,x,y-10);
+ });
+
+ nodes.forEach((n,i)=>{
+  ctx.beginPath();ctx.arc(n.x,n.y,24,0,Math.PI*2);
+  ctx.fillStyle=n.color;ctx.fill();
+  ctx.strokeStyle="#555";ctx.lineWidth=1;ctx.stroke();
+  ctx.fillStyle="#222";ctx.font="12px Arial";ctx.textAlign="center";
+  ctx.fillText(n.label,n.x,n.y+38);
+  ctx.fillStyle="#777";ctx.font="10px Arial";
+  ctx.fillText("Node "+i,n.x,n.y+52);
+ });
+ ctx.font="12px Arial";ctx.textAlign="left";ctx.fillStyle="#333";
+ ctx.fillText("UDP DATAGRAMS  →  →  →",12,20);
+ ctx.textAlign="right";
+ ctx.fillText("In transit: "+packets.length,w-12,20);
+ if(!running){
+  ctx.textAlign="center";ctx.fillStyle="#666";
+  ctx.fillText(time===0?"Press Start to transmit UDP packets":"Simulation paused",w/2,42);
+ }
+}
+function loop(ts){
+ if(!running)return;
+ if(!last)last=ts;
+ const dt=Math.min((ts-last)/1000,.05);last=ts;
+ update(dt);draw();requestAnimationFrame(loop);
+}
+$("start").onclick=()=>{
+ if(running)return;
+ running=true;last=0;
+ $("status").textContent="UDP datagrams are being transmitted.";
+ log("UDP transmission started.");
+ requestAnimationFrame(loop);
+};
+$("pause").onclick=()=>{
+ running=false;last=0;draw();
+ $("status").textContent="Simulation paused.";
+ log("Transmission paused.");
+};
+$("reset").onclick=()=>{
+ running=false;last=0;time=0;nextSend=0;
+ packets=[];serial=0;sent=received=0;
+ $("sent").textContent=0;$("received").textContent=0;
+ $("transit").textContent=0;$("clock").textContent="0.00 s";
+ $("log").textContent="Simulation reset.";
+ $("status").textContent="Ready. Click Start to transmit UDP packets.";
+ draw();
+};
+window.addEventListener("resize",resize);
+resize();
+</script>
+</body>
+</html>

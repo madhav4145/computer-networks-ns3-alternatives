@@ -1,0 +1,302 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CN Experiment 6 - Congestion Control Simulation</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:Arial;background:#f4f5f7;color:#222}
+.window{max-width:1200px;margin:16px auto;background:white;border:1px solid #c7c7c7}
+.titlebar{padding:9px 14px;background:#ededed;border-bottom:1px solid #ccc;font-weight:bold;text-align:center}
+.toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid #ddd;background:#fafafa}
+button{padding:7px 12px;border:1px solid #aaa;border-radius:4px;background:#fff;cursor:pointer;font-weight:600}
+button:hover{background:#e9f1ff}
+button.primary{background:#e3f2e5;border-color:#80b58a}
+.control{display:flex;align-items:center;gap:6px;font-size:13px}
+input[type=range]{width:120px}
+.time{font-family:monospace;background:#111;color:#7cff86;padding:5px 8px;min-width:82px;text-align:center;border-radius:3px}
+.stage-wrap{padding:12px}
+canvas{display:block;width:100%;height:470px;border:1px solid #d5d5d5;background:#fff}
+.bottom{display:grid;grid-template-columns:1.2fr 1fr;gap:12px;padding:0 12px 12px}
+.panel{border:1px solid #ddd;padding:12px;min-height:120px;background:#fcfcfc}
+.panel h3{font-size:15px;margin:0 0 10px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.stat{background:#f0f3f7;padding:9px;border-radius:4px}
+.stat span{display:block;color:#555;font-size:12px}
+.stat strong{display:block;font-size:20px;margin-top:3px}
+.bar{height:10px;background:#e5e5e5;border-radius:8px;overflow:hidden;margin:8px 0}
+.bar>div{height:100%;width:20%;background:#2878d0;transition:width .2s}
+#log{height:86px;overflow:auto;font-size:12px;line-height:1.5;color:#444}
+.hint{font-size:12px;color:#666;padding:0 14px 12px}
+@media(max-width:700px){
+canvas{height:390px}
+.bottom{grid-template-columns:1fr}
+.stats{grid-template-columns:repeat(3,1fr)}
+input[type=range]{width:85px}
+}
+</style>
+</head>
+<body>
+<div class="window">
+<div class="titlebar">Network Animator — TCP Congestion Control</div>
+<div class="toolbar">
+<button id="startBtn" class="primary">▶ Start</button>
+<button id="pauseBtn">Ⅱ Pause</button>
+<button id="resetBtn">↻ Reset</button>
+<div class="control">Speed <input id="speed" type="range" min="1" max="5" value="3"><span id="speedVal">3×</span></div>
+<div class="control">Congestion <input id="congestion" type="range" min="0" max="100" value="35"><span id="congVal">35%</span></div>
+<div class="time" id="clock">0.00 s</div>
+</div>
+<div class="stage-wrap"><canvas id="network"></canvas></div>
+<div class="bottom">
+<div class="panel">
+<h3>TCP Statistics</h3>
+<div class="stats">
+<div class="stat"><span>Congestion window</span><strong id="cwnd">1 MSS</strong></div>
+<div class="stat"><span>Packets received</span><strong id="received">0</strong></div>
+<div class="stat"><span>Packets lost</span><strong id="lost">0</strong></div>
+</div>
+<div style="font-size:12px;margin-top:12px">Congestion window (CWND)</div>
+<div class="bar"><div id="cwndBar"></div></div>
+<div id="status" style="font-size:13px;color:#275d2e">Ready. Press Start to begin packet transmission.</div>
+</div>
+<div class="panel">
+<h3>Event Log</h3>
+<div id="log">0.00s — Simulation initialized.<br>0.00s — TCP sender is ready.</div>
+</div>
+</div>
+</div>
+<script>
+const canvas=document.getElementById('network');
+const ctx=canvas.getContext('2d');
+const $=id=>document.getElementById(id);
+let running=false,last=0,elapsed=0,packets=[],nextSend=0;
+let received=0,lost=0,cwnd=1,threshold=8,lossCooldown=0;
+let logItems=['0.00s — Simulation initialized.','0.00s — TCP sender is ready.'];
+let nodes=[];
+
+function resize(){
+ const rect=canvas.getBoundingClientRect(),dpr=window.devicePixelRatio||1;
+ canvas.width=Math.max(1,Math.round(rect.width*dpr));
+ canvas.height=Math.max(1,Math.round(rect.height*dpr));
+ ctx.setTransform(dpr,0,0,dpr,0,0);
+ const w=rect.width,h=rect.height,y=h*.52;
+ nodes=[
+  {x:w*.12,y,label:'TCP Sender'},
+  {x:w*.37,y,label:'Router 1'},
+  {x:w*.63,y,label:'Router 2'},
+  {x:w*.88,y,label:'TCP Receiver'}
+ ];
+ draw();
+}
+function addLog(message){
+ logItems.unshift(elapsed.toFixed(2)+'s — '+message);
+ logItems=logItems.slice(0,12);
+ $('log').innerHTML=logItems.map(escapeHtml).join('<br>');
+}
+function escapeHtml(s){
+ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+/* TCP data packets are created at the sender. */
+function spawnPacket(){
+ packets.push({
+  x:nodes[0].x+26,
+  y:nodes[0].y,
+  segment:0,
+  progress:0,
+  speed:.62+Math.random()*.12,
+  id:Math.floor(elapsed*10)+packets.length+1,
+  color:'#1475d1',
+  type:'data'
+ });
+}
+
+/* Data travels forward; ACKs return to the sender. */
+function update(dt){
+ elapsed+=dt;
+ const speed=Number($('speed').value);
+ const congestion=Number($('congestion').value)/100;
+ lossCooldown=Math.max(0,lossCooldown-dt);
+ nextSend-=dt*speed;
+
+ if(nextSend<=0){
+  const burst=Math.min(3,Math.max(1,Math.ceil(cwnd/4)));
+  for(let i=0;i<burst;i++)spawnPacket();
+  nextSend=Math.max(.18,1.15/Math.max(1,cwnd/2));
+ }
+
+ for(let i=packets.length-1;i>=0;i--){
+  const p=packets[i];
+  p.progress+=dt*speed*p.speed;
+
+  if(p.progress>=1){
+   p.progress=0;
+
+   if(p.type==='data'){
+    p.segment++;
+
+    if(p.segment===2&&Math.random()<congestion&&lossCooldown<=0){
+     lost++;
+     threshold=Math.max(2,Math.floor(cwnd/2));
+     cwnd=1;
+     lossCooldown=1.4;
+     addLog('Packet loss at Router 2 — CWND reduced; slow start restarts.');
+     $('status').textContent='Congestion detected: packet loss, reducing CWND.';
+     $('status').style.color='#b3261e';
+     packets.splice(i,1);
+     continue;
+    }
+
+    if(p.segment>=3){
+     received++;
+
+     packets.push({
+      id:p.id,
+      type:'ack',
+      segment:2,
+      progress:0,
+      speed:p.speed,
+      color:'#d12b35'
+     });
+
+     packets.splice(i,1);
+    }
+   }
+   else{
+    p.segment--;
+
+    if(p.segment<0){
+     if(cwnd<threshold)cwnd=Math.min(threshold,cwnd+1);
+     else cwnd=Math.min(16,cwnd+1/Math.max(1,cwnd));
+
+     addLog('ACK received — congestion window is '+cwnd.toFixed(1)+' MSS.');
+     $('status').textContent='ACK received: congestion window is increasing.';
+     $('status').style.color='#275d2e';
+     packets.splice(i,1);
+    }
+   }
+  }
+ }
+
+ $('clock').textContent=elapsed.toFixed(2)+' s';
+ $('cwnd').textContent=cwnd.toFixed(1)+' MSS';
+ $('received').textContent=received;
+ $('lost').textContent=lost;
+ $('cwndBar').style.width=(Math.min(16,cwnd)/16*100)+'%';
+}
+function arrow(x1,y1,x2,y2,color,width=2){
+ const angle=Math.atan2(y2-y1,x2-x1),head=9;
+ ctx.strokeStyle=color;ctx.fillStyle=color;ctx.lineWidth=width;
+ ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+ ctx.beginPath();ctx.moveTo(x2,y2);
+ ctx.lineTo(x2-head*Math.cos(angle-.48),y2-head*Math.sin(angle-.48));
+ ctx.lineTo(x2-head*Math.cos(angle+.48),y2-head*Math.sin(angle+.48));
+ ctx.closePath();ctx.fill();
+}
+function draw(){
+ const w=canvas.clientWidth,h=canvas.clientHeight;
+ if(!w||!h||nodes.length!==4)return;
+ ctx.clearRect(0,0,w,h);
+ ctx.strokeStyle='#e1e3e7';ctx.lineWidth=1;
+ for(let x=0;x<w;x+=w/6){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,h);ctx.stroke();}
+ for(let y=0;y<h;y+=h/5){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();}
+ const y=nodes[0].y;
+ for(let i=0;i<3;i++){
+  const a=nodes[i],b=nodes[i+1];
+  ctx.strokeStyle='#a8adb5';ctx.lineWidth=2;
+  ctx.beginPath();ctx.moveTo(a.x+25,y);ctx.lineTo(b.x-25,y);ctx.stroke();
+  arrow((a.x+b.x)/2-14,y-18,(a.x+b.x)/2+14,y-18,'#7d8794',1.6);
+  ctx.fillStyle='#666';ctx.font='11px Arial';ctx.textAlign='center';
+  ctx.fillText('Link '+(i+1),(a.x+b.x)/2,y-31);
+ }
+ nodes.forEach((n,i)=>{
+  ctx.beginPath();ctx.arc(n.x,n.y,24,0,Math.PI*2);
+  ctx.fillStyle='#f10b13';ctx.fill();
+  ctx.strokeStyle='#a40000';ctx.lineWidth=1.5;ctx.stroke();
+  ctx.fillStyle='#222';ctx.font='12px Arial';ctx.textAlign='center';
+  ctx.fillText(n.label,n.x,n.y+42);
+  ctx.fillStyle='#888';ctx.font='10px monospace';
+  ctx.fillText('Node '+i,n.x,n.y+57);
+ });
+
+ /* ACK arrows point left; data arrows point right. */
+ packets.forEach(p=>{
+  let a,b,x1,x2;
+
+  if(p.type==='data'){
+   a=nodes[p.segment];
+   b=nodes[Math.min(3,p.segment+1)];
+   x1=a.x+27;
+   x2=b.x-27;
+  }
+  else{
+   a=nodes[p.segment];
+   b=nodes[p.segment+1];
+   x1=b.x-27;
+   x2=a.x+27;
+  }
+
+  const x=x1+(x2-x1)*p.progress;
+  if(p.type==='ack') arrow(x+12,a.y,x-12,a.y,'#d12b35',2.5);
+  else arrow(x-12,a.y,x+12,a.y,p.color,2.5);
+
+  ctx.fillStyle=p.type==='ack'?'#d12b35':'#1769aa';
+  ctx.font='10px Arial';
+  ctx.textAlign='center';
+  ctx.fillText((p.type==='ack'?'ACK':'P')+p.id,x,a.y-10);
+ });
+
+ ctx.textAlign='left';ctx.font='12px Arial';
+ ctx.fillStyle='#1475d1';ctx.fillRect(18,16,13,4);
+ ctx.fillStyle='#444';ctx.fillText('TCP data packet',38,22);
+ ctx.fillStyle='#7d8794';ctx.fillRect(18,35,13,3);
+ ctx.fillStyle='#444';ctx.fillText('Link direction',38,41);
+ ctx.fillStyle='#666';ctx.textAlign='right';
+ ctx.fillText('CWND: '+cwnd.toFixed(1)+' MSS',w-18,22);
+ ctx.fillText('Threshold: '+threshold+' MSS',w-18,40);
+ if(!running){
+  ctx.fillStyle='rgba(255,255,255,.72)';ctx.fillRect(w/2-92,12,184,27);
+  ctx.fillStyle='#555';ctx.textAlign='center';ctx.font='12px Arial';
+  ctx.fillText(elapsed===0?'Press Start to transmit packets':'Paused',w/2,30);
+ }
+}
+function loop(ts){
+ if(!running)return;
+ if(!last)last=ts;
+ const dt=Math.min((ts-last)/1000,.05);last=ts;
+ update(dt);draw();requestAnimationFrame(loop);
+}
+$('startBtn').addEventListener('click',()=>{
+ if(running)return;
+ running=true;last=0;
+ $('status').textContent='Simulation running: TCP packets are being transmitted.';
+ $('status').style.color='#275d2e';
+ addLog('Transmission started.');
+ requestAnimationFrame(loop);
+});
+$('pauseBtn').addEventListener('click',()=>{
+ running=false;last=0;draw();
+ $('status').textContent='Simulation paused.';
+ addLog('Simulation paused.');
+});
+$('resetBtn').addEventListener('click',()=>{
+ running=false;last=0;elapsed=0;packets=[];nextSend=0;
+ received=0;lost=0;cwnd=1;threshold=8;lossCooldown=0;
+ logItems=['0.00s — Simulation reset.','0.00s — TCP sender is ready.'];
+ $('clock').textContent='0.00 s';$('cwnd').textContent='1 MSS';
+ $('received').textContent='0';$('lost').textContent='0';
+ $('cwndBar').style.width=(1/16*100)+'%';
+ $('log').innerHTML=logItems.join('<br>');
+ $('status').textContent='Ready. Press Start to begin packet transmission.';
+ $('status').style.color='#275d2e';draw();
+});
+$('speed').addEventListener('input',()=>$('speedVal').textContent=$('speed').value+'×');
+$('congestion').addEventListener('input',()=>$('congVal').textContent=$('congestion').value+'%');
+window.addEventListener('resize',resize);
+resize();
+</script>
+</body>
+</html>
